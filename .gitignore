@@ -1,0 +1,30 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+
+# VS Code
+.vscode/
+
+# ChromaDB
+chroma_db/
+
+# Cache
+.cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Ignore dataset
+Image_Disease/
+
+# Ignore trained model
+vision/*.pth
