@@ -1,6 +1,10 @@
 import streamlit as st
 from llm.chatbot import get_chat_response
 
+from services.conversation import (
+    initialize_conversation
+)
+
 # ==========================================================
 # Page Configuration
 # ==========================================================
@@ -77,9 +81,10 @@ if "messages" not in st.session_state:
 
     st.session_state.messages = []
 
-if "symptom_history" not in st.session_state:
+initialize_conversation(
+    st.session_state
+)
 
-    st.session_state.symptom_history = ""
 # ==========================================================
 # TAB 1 : TEXT DIAGNOSIS
 # ==========================================================
@@ -93,21 +98,17 @@ You can describe your cow's symptoms in simple English.
 
 ### Example Questions
 
-• My cow has fever.
-
-• My cow has mouth ulcers and drooling.
-
-• My cow has skin nodules.
-
-• What is Foot and Mouth Disease?
-
-• How can I prevent Mastitis?
+- My cow has fever.
+- My cow has mouth ulcers.
+- My cow has skin nodules.
+- What is Foot and Mouth Disease?
+- How can I prevent Mastitis?
 """)
 
     st.divider()
 
     # ------------------------------------------------------
-    # Display Previous Chat Messages
+    # Display Previous Messages
     # ------------------------------------------------------
 
     for message in st.session_state.messages:
@@ -124,11 +125,9 @@ You can describe your cow's symptoms in simple English.
         "Describe your cow's symptoms..."
     )
 
-    if prompt:
+    if prompt and prompt.strip():
 
-        # ------------------------------------------
-        # Save User Message
-        # ------------------------------------------
+        # User Message
 
         st.session_state.messages.append(
             {
@@ -137,36 +136,31 @@ You can describe your cow's symptoms in simple English.
             }
         )
 
-        # Keep only user symptom history
-        st.session_state.symptom_history += (
-            "\n" + prompt
-        )
-
-        # ------------------------------------------
-        # Display User Message
-        # ------------------------------------------
-
         with st.chat_message("user"):
 
             st.markdown(prompt)
 
-        # ------------------------------------------
-        # Generate AI Response
-        # ------------------------------------------
+        # Assistant Response
 
         with st.chat_message("assistant"):
 
-            with st.spinner("Analyzing..."):
+            with st.spinner(
+                "Understanding your question..."
+            ):
+
+                prompt = prompt.strip()
 
                 answer = get_chat_response(
-                    st.session_state.symptom_history
+
+                    prompt,
+
+                    st.session_state
+
                 )
 
                 st.markdown(answer)
 
-        # ------------------------------------------
         # Save Assistant Message
-        # ------------------------------------------
 
         st.session_state.messages.append(
             {
@@ -174,6 +168,7 @@ You can describe your cow's symptoms in simple English.
                 "content": answer
             }
         )
+
 # ==========================================================
 # TAB 2 : IMAGE DIAGNOSIS
 # ==========================================================
@@ -208,9 +203,7 @@ Supported image formats:
         st.success("✅ Image uploaded successfully.")
 
         st.info("""
-Image classification will be implemented in the next phase.
-
-Workflow:
+Image Classification Workflow
 
 Image
    ↓
@@ -218,18 +211,18 @@ EfficientNet-B0
    ↓
 Disease Prediction
    ↓
-CowDoc AI (RAG)
+CowDoc AI
    ↓
-Disease Details
-Treatment
-Prevention
-Veterinary Advice
+Stage 2
+   ↓
+Farmer-Friendly Answer
 """)
 
     else:
 
-        st.info("Please upload an image to continue.")
-
+        st.info(
+            "Please upload an image to continue."
+        )
 
 # ==========================================================
 # TAB 3 : VOICE ASSISTANT
@@ -259,9 +252,8 @@ Future Features
     )
 
     st.info(
-        "Voice Assistant will be implemented in a later phase."
+        "Voice Assistant will be implemented in the next phase."
     )
-
 
 # ==========================================================
 # Footer
@@ -270,5 +262,5 @@ Future Features
 st.divider()
 
 st.caption(
-    "🐄 CowDoc AI | AI-Powered Chatbot for Cattle Disease Detection"
+    "🐄 CowDoc AI | AI Powered Chatbot for Cattle Disease Detection"
 )

@@ -1,533 +1,588 @@
+print("Loaded NEW chatbot.py")
 from openai import OpenAI
 from dotenv import load_dotenv
+
 import os
+import json
+
+from config import (
+    STAGE1_MODEL,
+    STAGE2_MODEL,
+    NO_RAG_RESPONSE,
+    SYSTEM_ERROR_MESSAGE
+)
 
 from rag.retrieve import retrieve_documents
-from llm.prompt import SYSTEM_PROMPT
+
+from llm.stage1_prompt import get_stage1_prompt
+from llm.stage2_prompt import get_stage2_prompt
+
+from services.conversation import (
+    start_clarification,
+    is_waiting_for_clarification,
+    build_clarification_input,
+    clear_clarification
+)
+
+# ==========================================================
+# Load Environment
+# ==========================================================
 
 load_dotenv()
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY")
 )
-# ==========================================================
-# OpenAI Model
-# ==========================================================
-
-MODEL_NAME = os.getenv(
-    "OPENAI_MODEL",
-    "gpt-4.1-mini"
-)
-# ==========================================================
-# Supported Diseases
-# ==========================================================
-
-SUPPORTED_DISEASES = {
-    "foot and mouth disease": "FMD",
-    "fmd": "FMD",
-
-    "lumpy skin disease": "LSD",
-    "lsd": "LSD",
-
-    "mastitis": "Mastitis",
-
-    "foot rot": "FootRot",
-    "footrot": "FootRot",
-
-    "ringworm": "Ringworm"
-}
 
 # ==========================================================
-# Symptoms Dictionary
+# Stage 1 JSON Schema
 # ==========================================================
 
-SYMPTOMS = {
-
-    "fever": [
-        "fever",
-        "high temperature",
-        "temperature"
-    ],
+STAGE1_SCHEMA = {
 
-    "loss_of_appetite": [
-        "not eating",
-        "loss of appetite",
-        "reduced appetite"
-    ],
+    "name": "cowdoctor_understanding",
 
-    "mouth_ulcers": [
-        "mouth ulcer",
-        "mouth ulcers",
-        "mouth sores",
-        "blisters"
-    ],
+    "strict": True,
 
-    "drooling": [
-        "drooling",
-        "salivation",
-        "saliva"
-    ],
+    "schema": {
 
-    "skin_nodules": [
-        "skin nodules",
-        "nodules",
-        "raised lumps",
-        "lumps"
-    ],
+        "type": "object",
 
-    "limping": [
-        "limping",
-        "lameness"
-    ],
+        "properties": {
 
-    "foot_swelling": [
-        "foot swelling",
-        "swollen hoof",
-        "hoof swelling"
-    ],
+            "status": {
 
-    "udder_swelling": [
-        "udder swelling",
-        "swollen udder"
-    ],
+                "type": "string",
 
-    "abnormal_milk": [
-        "milk clots",
-        "flakes in milk",
-        "abnormal milk"
-    ],
+                "enum": [
 
-    "hair_loss": [
-        "hair loss",
-        "bald patches"
-    ],
+                    "identified",
 
-    "round_skin_patches": [
-        "round patches",
-        "ring shaped patches",
-        "grey patches"
-    ]
-}
-# ==========================================================
-# Detect Disease Name
-# ==========================================================
+                    "clarification_needed",
 
-def detect_disease(question):
+                    "out_of_scope"
 
-    question = question.lower()
+                ]
 
-    for keyword, disease in SUPPORTED_DISEASES.items():
+            },
 
-        if keyword in question:
-            return disease
+            "disease": {
 
-    return None
+                "type": [
 
+                    "string",
 
-# ==========================================================
-# Detect Symptoms
-# ==========================================================
+                    "null"
 
-def detect_symptoms(question):
+                ]
 
-    question = question.lower()
+            },
 
-    detected = []
+            "normalized_query": {
 
-    for symptom, keywords in SYMPTOMS.items():
+                "type": "string"
 
-        for keyword in keywords:
+            },
 
-            if keyword in question:
+            "intent_type": {
 
-                detected.append(symptom)
-                break
+                "type": [
 
-    return detected
+                    "string",
 
+                    "null"
 
-# ==========================================================
-# Check if Question is Vague
-# ==========================================================
+                ]
 
-def is_vague_question(question):
+            },
 
-    question = question.lower().strip()
+            "clarifying_question": {
 
-    vague_inputs = [
+                "type": [
 
-        "my cow is sick",
-        "my cow is ill",
-        "cow is sick",
-        "cow is ill",
-        "help",
-        "please help",
-        "my animal is sick",
-        "my animal is ill"
+                    "string",
 
-    ]
+                    "null"
 
-    if question in vague_inputs:
-        return True
+                ]
 
-    disease = detect_disease(question)
+            },
 
-    symptoms = detect_symptoms(question)
+            "out_of_scope_note": {
 
-    if disease:
-        return False
+                "type": [
 
-    if len(symptoms) == 0:
-        return True
+                    "string",
 
-    return False
+                    "null"
 
+                ]
 
-# ==========================================================
-# Check Unsupported Disease
-# ==========================================================
+            },
 
-def unsupported_disease(question):
+            "urgent": {
 
-    question = question.lower()
+                "type": "boolean"
 
-    unsupported = [
+            }
 
-        "bird flu",
-        "anthrax",
-        "rabies",
-        "brucellosis",
-        "black quarter",
-        "blackleg",
-        "tuberculosis"
+        },
 
-    ]
+        "required": [
 
-    for disease in unsupported:
+            "status",
 
-        if disease in question:
+            "disease",
 
-            return disease
+            "normalized_query",
 
-    return None
-# ==========================================================
-# Need Follow-up Questions?
-# ==========================================================
+            "intent_type",
 
-def need_followup(symptoms):
+            "clarifying_question",
 
-    symptom_set = set(symptoms)
+            "out_of_scope_note",
 
-    # Strong indicators for a specific disease
-    if {"mouth_ulcers", "drooling"} <= symptom_set:
-        return False          # Likely FMD
+            "urgent"
 
-    if {"skin_nodules", "fever"} <= symptom_set:
-        return False          # Likely LSD
+        ],
 
-    if {"udder_swelling", "abnormal_milk"} <= symptom_set:
-        return False          # Likely Mastitis
+        "additionalProperties": False
 
-    if {"limping", "foot_swelling"} <= symptom_set:
-        return False          # Likely Foot Rot
-
-    if {"hair_loss", "round_skin_patches"} <= symptom_set:
-        return False          # Likely Ringworm
-
-    # Not enough information
-    if len(symptom_set) <= 2:
-        return True
-
-    return False
-
-
-# ==========================================================
-# Generate Follow-up Questions
-# ==========================================================
-
-def get_followup_questions(symptoms):
-
-    symptom_set = set(symptoms)
-
-    questions = []
-
-    if "fever" in symptom_set:
-
-        if "mouth_ulcers" not in symptom_set:
-            questions.append(
-                "Does your cow have mouth ulcers or excessive drooling?"
-            )
-
-        if "skin_nodules" not in symptom_set:
-            questions.append(
-                "Does your cow have skin nodules or raised lumps?"
-            )
-
-        if "limping" not in symptom_set:
-            questions.append(
-                "Is your cow limping or having difficulty walking?"
-            )
-
-        if "udder_swelling" not in symptom_set:
-            questions.append(
-                "Is the udder swollen or is the milk abnormal?"
-            )
-
-        if "hair_loss" not in symptom_set:
-            questions.append(
-                "Are there circular skin patches or hair loss?"
-            )
-
-    if "limping" in symptom_set:
-
-        if "foot_swelling" not in symptom_set:
-
-            questions.append(
-                "Is there swelling between the hooves or a foul smell from the foot?"
-            )
-
-    if "udder_swelling" in symptom_set:
-
-        if "abnormal_milk" not in symptom_set:
-
-            questions.append(
-                "Does the milk contain clots or flakes?"
-            )
-
-    return questions
-
-
-# ==========================================================
-# Build Context for LLM
-# ==========================================================
-
-def build_context(results):
-
-    context = ""
-
-    for doc in results["documents"]:
-
-        context += doc + "\n\n"
-
-    return context
-# ==========================================================
-# Source Mapping
-# ==========================================================
-
-SOURCE_MAPPING = {
-
-    "Foot-and-Mouth Disease in Cattle .pdf": {
-        "organization": "National Dairy Development Board (NDDB)"
-    },
-
-    "Guidelines for prevention of Lumpy Skin Disease.pdf": {
-        "organization": "National Dairy Development Board (NDDB)"
-    },
-
-    "Lumpy Skin disease in cattle.pdf": {
-        "organization": "National Dairy Development Board (NDDB)"
-    },
-
-    "Common animal diseases and their management (1).pdf": {
-        "organization": "Vikaspedia"
-    },
-
-    "Incidences of mastitis among bovines and its management .pdf": {
-        "organization": "Indian Veterinary Research Institute (IVRI)"
-    },
-
-    "Footrot Disease Infographic FINAL.pdf": {
-        "organization": "University Veterinary Publication"
     }
 
 }
-
 # ==========================================================
-# Build Verified Sources
+# Stage 1
+# Understanding Module
 # ==========================================================
 
-def build_sources(results):
+def understand_farmer_question(user_question):
+    """
+    Stage 1
 
-    source_list = []
+    Understand the farmer's question and return
+    structured JSON.
+    """
 
-    for meta in results["sources"]:
+    try:
 
-        pdf = meta["source"]
+        response = client.responses.create(
 
-        info = SOURCE_MAPPING.get(
-            pdf,
-            {
-                "organization": "Verified Veterinary Source"
+            model=STAGE1_MODEL,
+
+            input=[
+
+                {
+                    "role": "system",
+
+                    "content": get_stage1_prompt()
+
+                },
+
+                {
+                    "role": "user",
+
+                    "content": user_question
+
+                }
+
+            ],
+
+            text={
+
+                "format": {
+
+                    "type": "json_schema",
+
+                    "name": STAGE1_SCHEMA["name"],
+
+                    "strict": True,
+
+                    "schema": STAGE1_SCHEMA["schema"]
+
+                }
+
             }
+
         )
 
-        formatted_source = (
-            f"Organization: {info['organization']}\n"
-            f"Document: {pdf}"
+    except Exception as e:
+
+        print(f"Stage 1 rror: {e}")
+
+        return {
+
+            "status": "clarification_needed",
+
+            "disease": None,
+
+            "normalized_query": "",
+
+            "intent_type": None,
+
+            "clarifying_question":
+                "Sorry, I couldn't understand your question. Could you describe your cow's symptoms again?",
+
+            "out_of_scope_note": None,
+
+            "urgent": False
+
+        }
+
+    try:
+
+        result = json.loads(
+            response.output_text
         )
 
-        if formatted_source not in source_list:
-            source_list.append(formatted_source)
+    except json.JSONDecodeError:
 
-    return "\n\n".join(source_list)
+        return {
+
+            "status": "clarification_needed",
+
+            "disease": None,
+
+            "normalized_query": "",
+
+            "intent_type": None,
+
+            "clarifying_question":
+                "Sorry, I couldn't understand your question. Could you describe your cow's symptoms again?",
+
+            "out_of_scope_note": None,
+
+            "urgent": False
+
+        }
+
+    required_fields = [
+
+    "status",
+
+    "disease",
+
+    "normalized_query",
+
+    "intent_type",
+
+    "clarifying_question",
+
+    "out_of_scope_note",
+
+    "urgent"
+
+    ]
+
+    for field in required_fields:
+
+     if field not in result:
+
+        raise ValueError(
+            f"Missing field: {field}"
+        )
+
+    return result
+# ==========================================================
+# Build RAG Context
+# ==========================================================
+
+def build_context(rag_results):
+    """
+    Convert retrieved documents into a single
+    context string for Stage 2.
+    """
+
+    context = ""
+
+    for document in rag_results["documents"]:
+
+        context += document
+
+        context += "\n\n"
+
+    return context
 
 
 # ==========================================================
-# Generate RAG Response
+# Build Source List
 # ==========================================================
 
-def generate_rag_response(user_question):
+def build_sources(rag_results):
+    """
+    Build a readable list of sources.
+    """
 
-    # Retrieve documents
-    results = retrieve_documents(user_question)
+    sources = []
 
-    # Build context
-    context = build_context(results)
+    for metadata in rag_results["sources"]:
 
-    # Build verified sources
-    verified_sources = build_sources(results)
+        source = metadata.get(
+            "source",
+            "Unknown Source"
+        )
 
-    # Create prompt for LLM
+        if source not in sources:
+
+            sources.append(source)
+
+    if len(sources) == 0:
+
+        return "No source available."
+
+    output = "Source:\n"
+
+    for source in sources:
+
+        output += f"- {source}\n"
+
+    return output.strip()
+
+
+# ==========================================================
+# Stage 2
+# Answering Module
+# ==========================================================
+
+def generate_final_answer(
+
+    user_question,
+
+    stage1_output,
+
+    rag_results
+
+):
+    """
+    Generate the final answer using ONLY
+    verified RAG knowledge.
+    """
+
+    context = build_context(
+        rag_results
+    )
+
+    sources = build_sources(
+        rag_results
+    )
+
     user_prompt = f"""
-User Question:
+Farmer Question
 
 {user_question}
 
 
-Retrieved Knowledge:
+Stage 1 Output
+
+{json.dumps(stage1_output, indent=2)}
+
+
+Retrieved Knowledge
 
 {context}
 
 
-Verified Knowledge Sources:
+Verified Sources
 
-{verified_sources}
+{sources}
 """
 
-    response = client.chat.completions.create(
+    try:
 
-        model=MODEL_NAME,
+        response = client.responses.create(
 
-        temperature=0.2,
+            model=STAGE2_MODEL,
 
-        messages=[
+            input=[
 
-            {
-                "role": "system",
-                "content": SYSTEM_PROMPT
-            },
+                {
+                    "role": "system",
 
-            {
-                "role": "user",
-                "content": user_prompt
-            }
+                    "content": get_stage2_prompt()
 
-        ]
+                },
 
-    )
+                {
+                    "role": "user",
 
-    return response.choices[0].message.content
+                    "content": user_prompt
+
+                }
+
+            ]
+
+        )
+
+        return response.output_text
+
+    except Exception as e:
+
+        print(f"Stage 2 Error: {e}")
+
+        return SYSTEM_ERROR_MESSAGE
 # ==========================================================
 # Main Chat Function
 # ==========================================================
 
-def get_chat_response(user_question):
+def get_chat_response(
+    user_question,
+    session_state
+):
+    """
+    Complete CowDoctor pipeline.
 
-    # Remove extra spaces
-    user_question = user_question.strip()
-
-    # ------------------------------------------------------
-    # Check Unsupported Disease
-    # ------------------------------------------------------
-
-    disease = unsupported_disease(user_question)
-
-    if disease:
-
-        return f"""
-❌ Sorry.
-
-CowDoc AI currently does not contain verified information about **{disease.title()}**.
-
-Currently supported diseases are:
-
-• Foot-and-Mouth Disease (FMD)
-
-• Lumpy Skin Disease (LSD)
-
-• Mastitis
-
-• Foot Rot
-
-• Ringworm
-
-Please consult a veterinarian for diseases outside this knowledge base.
-"""
+    User
+        ↓
+    Stage 1
+        ↓
+    Clarification / Out of Scope / Identified
+        ↓
+    RAG
+        ↓
+    Stage 2
+        ↓
+    Final Answer
+    """
 
     # ------------------------------------------------------
-    # Check Vague Question
+    # Handle Clarification Response
     # ------------------------------------------------------
 
-    if is_vague_question(user_question):
+    if is_waiting_for_clarification(session_state):
 
-        return """
-I need a little more information before I can help.
+        user_question = build_clarification_input(
 
-Please describe your cow's symptoms.
+            session_state,
 
-For example:
+            user_question
 
-• Fever
-• Mouth ulcers
-• Excessive drooling
-• Skin nodules
-• Swollen udder
-• Milk clots
-• Limping
-• Hair loss
+        )
 
-The more symptoms you describe, the more accurate I can be.
-"""
+        clear_clarification(session_state)
 
     # ------------------------------------------------------
-    # Detect Disease
+    # Stage 1
     # ------------------------------------------------------
 
-    detected_disease = detect_disease(user_question)
+    stage1_output = understand_farmer_question(
+        user_question
+    )
+
+    status = stage1_output.get("status")
 
     # ------------------------------------------------------
-    # Detect Symptoms
+    # Clarification Needed
     # ------------------------------------------------------
 
-    detected_symptoms = detect_symptoms(user_question)
+    if status == "clarification_needed":
+
+        question = stage1_output.get(
+            "clarifying_question",
+            "Could you please describe the symptoms in more detail?"
+        )
+
+        start_clarification(
+
+            session_state,
+
+            user_question,
+
+            question
+
+        )
+
+        return question
 
     # ------------------------------------------------------
-    # Need Follow-up Questions?
+    # Out of Scope
     # ------------------------------------------------------
 
-    if detected_disease is None:
+    if status == "out_of_scope":
 
-        if need_followup(detected_symptoms):
+        return stage1_output.get(
 
-            questions = get_followup_questions(detected_symptoms)
+            "out_of_scope_note",
 
-            response = (
-                "Based on the symptoms you described, I need a little more "
-                "information before identifying the most likely disease.\n\n"
-            )
+            "Sorry, CowDoctor currently supports only the diseases in its knowledge base."
 
-            for i, question in enumerate(questions, start=1):
-
-                response += f"{i}. {question}\n"
-
-            response += (
-                "\nPlease answer these questions so I can provide a better response."
-            )
-
-            return response
+        )
 
     # ------------------------------------------------------
-    # Retrieve Information using RAG
+    # Disease Identified
     # ------------------------------------------------------
 
-    return generate_rag_response(user_question)
+    disease = stage1_output.get("disease")
+
+    if disease is None:
+
+        return (
+            "I couldn't determine which disease you're asking about. "
+            "Could you provide a little more detail?"
+        )
+
+    # ------------------------------------------------------
+    # Retrieve Documents
+    # ------------------------------------------------------
+
+    rag_results = retrieve_documents(
+
+        disease=disease,
+
+        question=stage1_output["normalized_query"]
+
+    )
+
+    # ------------------------------------------------------
+    # Retrieval Check
+    # ------------------------------------------------------
+
+    if not rag_results["documents"]:
+
+       return NO_RAG_RESPONSE
+
+    # ------------------------------------------------------
+    # Stage 2
+    # ------------------------------------------------------
+
+    final_answer = generate_final_answer(
+
+        user_question,
+
+        stage1_output,
+
+        rag_results
+
+    )
+
+    return final_answer
+
+
+# ==========================================================
+# Local Testing
+# ==========================================================
+
+if __name__ == "__main__":
+
+    class DummySession(dict):
+        pass
+
+    session = DummySession()
+
+    while True:
+
+        question = input("\nFarmer: ")
+
+        if question.lower() == "exit":
+            break
+
+        answer = get_chat_response(
+
+            question,
+
+            session
+
+        )
+
+        print("\nCowDoctor:\n")
+
+        print(answer)

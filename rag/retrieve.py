@@ -1,69 +1,59 @@
+"""
+RAG Retrieval Module
+====================
+
+Responsibilities
+----------------
+- Receive the disease identified by Stage 1
+- Receive the normalized query from Stage 1
+- Search only within that disease
+- Return the most relevant knowledge chunks
+
+This module NEVER:
+- Detects diseases
+- Calls the LLM
+- Answers questions
+"""
+
 import chromadb
+
+from config import (
+    CHROMA_DB_PATH,
+    CHROMA_COLLECTION,
+    RAG_TOP_K
+)
+
 from rag.embedding import get_embedding
 
 # ==========================================================
 # Connect to ChromaDB
 # ==========================================================
 
-client = chromadb.PersistentClient(path="chroma_db")
-
-collection = client.get_collection(
-    name="cattle_disease_knowledge"
+client = chromadb.PersistentClient(
+    path=CHROMA_DB_PATH
 )
 
-# ==========================================================
-# Disease Mapping
-# ==========================================================
-
-DISEASE_MAPPING = {
-
-    "foot and mouth disease": "FMD",
-    "fmd": "FMD",
-
-    "lumpy skin disease": "LSD",
-    "lsd": "LSD",
-
-    "mastitis": "Mastitis",
-
-    "foot rot": "FootRot",
-    "footrot": "FootRot",
-
-    # Ringworm information is stored inside the General PDF
-    "ringworm": "General"
-}
-
-
-# ==========================================================
-# Detect Disease Name
-# ==========================================================
-
-def detect_disease(question):
-
-    question = question.lower()
-
-    for keyword, disease in DISEASE_MAPPING.items():
-
-        if keyword in question:
-            return disease
-
-    return None
-
+collection = client.get_collection(
+    name=CHROMA_COLLECTION
+)
 
 # ==========================================================
 # Retrieve Documents
 # ==========================================================
 
-def retrieve_documents(question, top_k=5):
-
-    detected_disease = detect_disease(question)
+def retrieve_documents(
+    disease,
+    question,
+    top_k=RAG_TOP_K
+):
+    """
+    Retrieve the most relevant chunks for the
+    identified disease.
+    """
 
     query_embedding = get_embedding(question)
 
-    # ------------------------------------------------------
-    # Disease Specific Search
-    # ------------------------------------------------------
-
-    if detected_disease:
+    try:
 
         results = collection.query(
 
@@ -72,33 +62,12 @@ def retrieve_documents(question, top_k=5):
             n_results=top_k,
 
             where={
-                "disease": detected_disease
+                "disease": disease
             }
 
         )
 
-    # ------------------------------------------------------
-    # Search Entire Knowledge Base
-    # ------------------------------------------------------
-
-    else:
-
-        results = collection.query(
-
-            query_embeddings=[query_embedding],
-
-            n_results=top_k
-
-        )
-
-    # ------------------------------------------------------
-    # Empty Results
-    # ------------------------------------------------------
-
-    if (
-        len(results["documents"]) == 0
-        or len(results["documents"][0]) == 0
-    ):
+    except Exception:
 
         return {
 
@@ -106,93 +75,65 @@ def retrieve_documents(question, top_k=5):
 
             "sources": [],
 
-            "distances": [],
-
-            "detected_disease": detected_disease
+            "distances": []
 
         }
 
-    # ------------------------------------------------------
-    # Filter Low Quality Results
-    # ------------------------------------------------------
-
-    filtered_documents = []
-    filtered_sources = []
-    filtered_distances = []
-
-    for doc, meta, distance in zip(
-
-        results["documents"][0],
-
-        results["metadatas"][0],
-
-        results["distances"][0]
-
-    ):
-
-        # Lower distance = Better Match
-        # 0.80 is a reasonable starting threshold
-        if distance <= 0.80:
-
-            filtered_documents.append(doc)
-
-            filtered_sources.append(meta)
-
-            filtered_distances.append(distance)
-
-    # ------------------------------------------------------
-    # If Filtering Removed Everything,
-    # Return Original Results
-    # ------------------------------------------------------
-
-    if len(filtered_documents) == 0:
-
-        filtered_documents = results["documents"][0]
-
-        filtered_sources = results["metadatas"][0]
-
-        filtered_distances = results["distances"][0]
+    documents = results.get("documents", [[]])
+    metadatas = results.get("metadatas", [[]])
+    distances = results.get("distances", [[]])
 
     return {
 
-        "documents": filtered_documents,
+        "documents": documents[0] if documents else [],
 
-        "sources": filtered_sources,
+        "sources": metadatas[0] if metadatas else [],
 
-        "distances": filtered_distances,
-
-        "detected_disease": detected_disease
+        "distances": distances[0] if distances else []
 
     }
 
 
 # ==========================================================
-# Test Retrieval
+# Local Testing
 # ==========================================================
 
 if __name__ == "__main__":
 
-    print("=" * 60)
-    print("CowDoc AI - Knowledge Base Search")
-    print("=" * 60)
-
     while True:
 
-        question = input("\nAsk a question: ")
+        disease = input("\nDisease: ")
 
-        if question.lower() == "exit":
+        if disease.lower() == "exit":
             break
 
-        results = retrieve_documents(question)
+        question = input("Question: ")
 
-        if len(results["documents"]) == 0:
+        results = retrieve_documents(
 
-            print("\nNo relevant information found.\n")
+            disease=disease,
+
+            question=question
+
+        )
+
+        if not results["documents"]:
+
+            print("\nNo documents found.\n")
+
             continue
 
         print("\nRetrieved Documents\n")
 
-        for i, (doc, meta, distance) in enumerate(
+        for i, (
+
+            document,
+
+            metadata,
+
+            distance
+
+        ) in enumerate(
 
             zip(
 
@@ -212,14 +153,14 @@ if __name__ == "__main__":
 
             print(f"Result : {i}")
 
-            print(f"Disease : {meta['disease']}")
+            print(f"Disease : {metadata.get('disease','Unknown')}")
 
-            print(f"Source : {meta['source']}")
+            print(f"Source : {metadata.get('source','Unknown')}")
 
             print(f"Distance : {round(distance,4)}")
 
             print("-" * 80)
 
-            print(doc[:700])
+            print(document[:600])
 
             print()
