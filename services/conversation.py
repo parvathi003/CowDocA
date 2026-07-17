@@ -2,13 +2,15 @@
 Conversation Manager
 ====================
 
-This module manages the conversation state for CowDoctor AI.
+This module manages the conversation state for CowDoc AI.
 
 Responsibilities
 ----------------
 - Remember the original question
 - Remember the clarification question
 - Remember whether clarification is pending
+- Remember image upload state
+- Remember image classification results
 - Combine the original question with the user's follow-up
 - Reset the conversation state
 
@@ -29,6 +31,10 @@ def initialize_conversation(session_state):
     do not already exist.
     """
 
+    # ------------------------------------------------------
+    # Clarification State
+    # ------------------------------------------------------
+
     if "clarification_pending" not in session_state:
         session_state["clarification_pending"] = False
 
@@ -37,6 +43,34 @@ def initialize_conversation(session_state):
 
     if "clarifying_question" not in session_state:
         session_state["clarifying_question"] = None
+
+    # ------------------------------------------------------
+    # Image State
+    # ------------------------------------------------------
+
+    # Has the user uploaded an image?
+    if "image_uploaded" not in session_state:
+        session_state["image_uploaded"] = False
+
+    # Uploaded image object/path
+    if "uploaded_image" not in session_state:
+        session_state["uploaded_image"] = None
+
+    # Full classifier output
+    if "classifier_result" not in session_state:
+        session_state["classifier_result"] = None
+
+    # Candidate diseases (Top-K)
+    if "candidate_diseases" not in session_state:
+        session_state["candidate_diseases"] = []
+
+    # Waiting for image upload?
+    if "waiting_for_image" not in session_state:
+        session_state["waiting_for_image"] = False
+
+    # User skipped image upload
+    if "image_skipped" not in session_state:
+        session_state["image_skipped"] = False
 
 
 # ==========================================================
@@ -96,10 +130,9 @@ def build_clarification_input(
     followup_answer
 ):
     """
-    Combine the original question and the
-    user's follow-up answer.
-
-    This combined text is sent back to Stage 1.
+    Combine the original question,
+    the assistant's clarification question,
+    and the farmer's reply.
     """
 
     original_question = session_state.get(
@@ -107,15 +140,100 @@ def build_clarification_input(
         ""
     )
 
+    clarifying_question = session_state.get(
+        "clarifying_question",
+        ""
+    )
+
     combined_question = f"""
 Original Question:
 {original_question}
 
-Farmer Follow-up:
+Previous Assistant Question:
+{clarifying_question}
+
+Farmer Reply:
 {followup_answer}
 """
 
     return combined_question.strip()
+
+# ==========================================================
+# Image State Helpers
+# ==========================================================
+
+def start_waiting_for_image(session_state):
+    """
+    Chatbot is requesting an image.
+    """
+
+    session_state["waiting_for_image"] = True
+    session_state["image_skipped"] = False
+
+
+def save_uploaded_image(
+    session_state,
+    uploaded_image
+):
+    """
+    Store uploaded image.
+    """
+
+    session_state["uploaded_image"] = uploaded_image
+    session_state["image_uploaded"] = True
+    session_state["waiting_for_image"] = False
+    session_state["image_skipped"] = False
+
+
+def save_classifier_result(
+    session_state,
+    classifier_result
+):
+    """
+    Save EfficientNet prediction results.
+    """
+
+    session_state["classifier_result"] = classifier_result
+
+    session_state["candidate_diseases"] = [
+
+        item["disease"]
+
+        for item in classifier_result
+
+    ]
+
+
+def skip_image(session_state):
+    """
+    User chooses to continue without image.
+    """
+
+    session_state["image_skipped"] = True
+    session_state["waiting_for_image"] = False
+
+
+def has_uploaded_image(session_state):
+    """
+    Returns True if image exists.
+    """
+
+    return session_state.get(
+        "image_uploaded",
+        False
+    )
+
+
+def is_waiting_for_image(session_state):
+    """
+    Returns True if chatbot is waiting
+    for an image.
+    """
+
+    return session_state.get(
+        "waiting_for_image",
+        False
+    )
 
 
 # ==========================================================
@@ -143,3 +261,10 @@ def reset_conversation(session_state):
     """
 
     clear_clarification(session_state)
+
+    session_state["image_uploaded"] = False
+    session_state["uploaded_image"] = None
+    session_state["classifier_result"] = None
+    session_state["candidate_diseases"] = []
+    session_state["waiting_for_image"] = False
+    session_state["image_skipped"] = False

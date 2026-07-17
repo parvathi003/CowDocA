@@ -12,7 +12,8 @@ from collections import Counter
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from torchvision import datasets, transforms
 
-import config
+from cow_image_classifier import config
+from cow_image_classifier.model import build_model
 
 # ==========================================================
 # ImageNet Normalization

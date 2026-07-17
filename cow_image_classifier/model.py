@@ -10,7 +10,8 @@ from torchvision.models import (
     EfficientNet_B0_Weights
 )
 
-import config
+from cow_image_classifier import config
+
 
 # ==========================================================
 # Build Model

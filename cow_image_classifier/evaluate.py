@@ -14,7 +14,8 @@ from sklearn.metrics import (
     accuracy_score
 )
 
-import config
+from cow_image_classifier import config
+from cow_image_classifier.model import build_model
 
 from dataset import build_dataloaders
 from model import build_model

@@ -29,7 +29,8 @@ from sklearn.metrics import (
 
 from tqdm import tqdm
 
-import config
+from cow_image_classifier import config
+from cow_image_classifier.model import build_model
 
 from dataset import build_dataloaders
 

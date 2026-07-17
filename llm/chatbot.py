@@ -21,7 +21,8 @@ from services.conversation import (
     start_clarification,
     is_waiting_for_clarification,
     build_clarification_input,
-    clear_clarification
+    clear_clarification,
+    start_waiting_for_image
 )
 
 # ==========================================================
@@ -59,6 +60,8 @@ STAGE1_SCHEMA = {
                     "identified",
 
                     "clarification_needed",
+
+                    "image_recommended",
 
                     "out_of_scope"
 
@@ -108,6 +111,18 @@ STAGE1_SCHEMA = {
 
             },
 
+            "image_reason": {
+
+                "type": [
+
+                    "string",
+
+                    "null"
+
+                ]
+
+            },
+
             "out_of_scope_note": {
 
                 "type": [
@@ -123,6 +138,36 @@ STAGE1_SCHEMA = {
             "urgent": {
 
                 "type": "boolean"
+
+            },
+
+            "updated_summary": {
+
+                "type": "string"
+
+            },
+
+            "new_information": {
+
+                "type": "array",
+
+                "items": {
+
+                    "type": "string"
+
+                }
+
+            },
+
+            "timeline": {
+
+                "type": "string"
+
+            },
+
+            "treatments_tried": {
+
+                "type": "string"
 
             }
 
@@ -140,9 +185,19 @@ STAGE1_SCHEMA = {
 
             "clarifying_question",
 
+            "image_reason",
+
             "out_of_scope_note",
 
-            "urgent"
+            "urgent",
+
+            "updated_summary",
+
+            "new_information",
+
+            "timeline",
+
+            "treatments_tried"
 
         ],
 
@@ -152,17 +207,200 @@ STAGE1_SCHEMA = {
 
 }
 # ==========================================================
+# Build Image Context
+# ==========================================================
+
+def build_image_context(classifier_result):
+    """
+    Convert image classifier output into readable text
+    for Stage 1.
+
+    Returns None if no image is available.
+    """
+
+    if not classifier_result:
+        return None
+
+    lines = []
+
+    top = classifier_result["top_prediction"]
+
+    lines.append("An image has been uploaded.")
+    lines.append("")
+    lines.append(
+        f"Top Prediction: {top['disease']} "
+        f"({top['confidence']}%)"
+    )
+    lines.append("")
+    lines.append("Other Candidate Diseases:")
+
+    for prediction in classifier_result["predictions"][1:]:
+
+        lines.append(
+            f"- {prediction['disease']} "
+            f"({prediction['confidence']}%)"
+        )
+
+    return "\n".join(lines)
+# ==========================================================
+# Build Clinical Case Context
+# ==========================================================
+
+def build_case_context(session_state):
+
+    case = session_state.case
+
+    context = f"""
+Current Clinical Case
+
+Case Summary:
+{case["summary"]}
+
+Important Information:
+{chr(10).join("- " + item for item in case["important_information"]) if case["important_information"] else "None"}
+
+Timeline:
+{case["timeline"] or "Unknown"}
+
+Treatments Tried:
+{case["treatments_tried"] or "None"}
+
+Current Hypothesis:
+{case["hypothesis"] or "Unknown"}
+
+Clarification Rounds:
+{case["clarification_rounds"]}
+
+Urgent:
+{case["urgent"]}
+
+Status:
+{case["status"]}
+"""
+
+    if case["image_evidence"]:
+
+        top = case["image_evidence"]["top_prediction"]
+
+        context += f"""
+
+Image Evidence
+
+Top Prediction:
+{top["disease"]}
+
+Confidence:
+{top["confidence"]}%
+"""
+
+    else:
+
+        context += "\n\nImage Evidence:\nNone"
+
+    return context
+
+# ==========================================================
+# Update Clinical Case
+# ==========================================================
+
+def update_case(session_state, stage1_output):
+
+    case = session_state.case
+
+    # Update summary
+    summary = stage1_output.get("updated_summary", "").strip()
+
+    if summary:
+        case["summary"] = summary
+
+    # Add new important information
+    for item in stage1_output.get("new_information", []):
+
+        if item not in case["important_information"]:
+
+            case["important_information"].append(item)
+
+    # Update timeline
+    timeline = stage1_output.get("timeline", "").strip()
+
+    if timeline:
+        case["timeline"] = timeline
+
+    # Update treatments
+    treatment = stage1_output.get("treatments_tried", "").strip()
+
+    if treatment:
+        case["treatments_tried"] = treatment
+
+    # Update hypothesis
+    disease = stage1_output.get("disease")
+
+    if disease:
+        case["hypothesis"] = disease
+
+    # Sticky urgent flag
+    if stage1_output.get("urgent"):
+
+        case["urgent"] = True
+
+    # Increase clarification rounds
+    if stage1_output.get("status") == "clarification_needed":
+
+        case["clarification_rounds"] += 1
+# ==========================================================
 # Stage 1
 # Understanding Module
 # ==========================================================
 
-def understand_farmer_question(user_question):
+def understand_farmer_question(
+    farmer_question,
+    case_context=None,
+    image_context=None
+):
     """
     Stage 1
 
     Understand the farmer's question and return
     structured JSON.
     """
+
+    # ------------------------------------------------------
+    # Build User Content
+    # ------------------------------------------------------
+
+    user_content = ""
+
+    if case_context:
+
+        user_content += f"""
+    Current Clinical Case
+
+    {case_context}
+
+    ------------------------------------------------
+    """
+
+    user_content += f"""
+
+    Latest Farmer Reply
+
+    {farmer_question}
+    """
+
+    if image_context:
+
+        user_content += f"""
+
+    ------------------------------------------------
+
+    Image Information
+
+    {image_context}
+    """
+
+    # ------------------------------------------------------
+    # Call Stage 1 LLM
+    # ------------------------------------------------------
 
     try:
 
@@ -174,16 +412,12 @@ def understand_farmer_question(user_question):
 
                 {
                     "role": "system",
-
                     "content": get_stage1_prompt()
-
                 },
 
                 {
                     "role": "user",
-
-                    "content": user_question
-
+                    "content": user_content
                 }
 
             ],
@@ -208,7 +442,7 @@ def understand_farmer_question(user_question):
 
     except Exception as e:
 
-        print(f"Stage 1 rror: {e}")
+        print(f"Stage 1 Error: {e}")
 
         return {
 
@@ -223,11 +457,25 @@ def understand_farmer_question(user_question):
             "clarifying_question":
                 "Sorry, I couldn't understand your question. Could you describe your cow's symptoms again?",
 
+            "image_reason": None,
+
             "out_of_scope_note": None,
 
-            "urgent": False
+            "urgent": False,
+
+            "updated_summary": "",
+
+            "new_information": [],
+
+            "timeline": "",
+
+            "treatments_tried": ""
 
         }
+
+    # ------------------------------------------------------
+    # Parse JSON
+    # ------------------------------------------------------
 
     try:
 
@@ -250,37 +498,53 @@ def understand_farmer_question(user_question):
             "clarifying_question":
                 "Sorry, I couldn't understand your question. Could you describe your cow's symptoms again?",
 
+            "image_reason": None,
+
             "out_of_scope_note": None,
 
-            "urgent": False
+            "urgent": False,
+
+            "updated_summary": "",
+
+            "new_information": [],
+
+            "timeline": "",
+
+            "treatments_tried": ""
 
         }
 
+    # ------------------------------------------------------
+    # Validate Required Fields
+    # ------------------------------------------------------
+
     required_fields = [
 
-    "status",
+        "status",
 
-    "disease",
+        "disease",
 
-    "normalized_query",
+        "normalized_query",
 
-    "intent_type",
+        "intent_type",
 
-    "clarifying_question",
+        "clarifying_question",
 
-    "out_of_scope_note",
+        "image_reason",
 
-    "urgent"
+        "out_of_scope_note",
+
+        "urgent"
 
     ]
 
     for field in required_fields:
 
-     if field not in result:
+        if field not in result:
 
-        raise ValueError(
-            f"Missing field: {field}"
-        )
+            raise ValueError(
+                f"Missing field: {field}"
+            )
 
     return result
 # ==========================================================
@@ -428,21 +692,6 @@ def get_chat_response(
     user_question,
     session_state
 ):
-    """
-    Complete CowDoctor pipeline.
-
-    User
-        ↓
-    Stage 1
-        ↓
-    Clarification / Out of Scope / Identified
-        ↓
-    RAG
-        ↓
-    Stage 2
-        ↓
-    Final Answer
-    """
 
     # ------------------------------------------------------
     # Handle Clarification Response
@@ -464,12 +713,78 @@ def get_chat_response(
     # Stage 1
     # ------------------------------------------------------
 
-    stage1_output = understand_farmer_question(
-        user_question
+    # ------------------------------------------------------
+    # Build Image Context
+    # ------------------------------------------------------
+
+    image_context = build_image_context(
+        session_state.get("classifier_result")
     )
+    case_context = build_case_context(
+       session_state
+)
+    # ------------------------------------------------------
+    # Stage 1
+    # ------------------------------------------------------
 
+    stage1_output = understand_farmer_question(
+        farmer_question=user_question,
+        case_context=case_context,
+        image_context=image_context
+    )
+    print("\n========== STAGE 1 OUTPUT ==========")
+    print(json.dumps(stage1_output, indent=4))
+    print("====================================")
+    # ------------------------------------------------------
+    # Update Clinical Case Memory
+    # ------------------------------------------------------
+
+    update_case(
+        session_state,
+        stage1_output
+    )
     status = stage1_output.get("status")
+    # ------------------------------------------------------
+    # Memory Recall
+    # ------------------------------------------------------
 
+    if stage1_output.get("intent_type") == "memory_recall":
+
+            case = session_state.case
+
+            response = "Here's what you've told me so far:\n\n"
+
+            if case["summary"]:
+                response += f"Summary:\n{case['summary']}\n\n"
+
+            if case["important_information"]:
+                response += "Confirmed information:\n"
+
+                for item in case["important_information"]:
+                    response += f"• {item}\n"
+
+            if case["hypothesis"]:
+                response += f"\nCurrent identified disease: {case['hypothesis']}"
+
+            return response
+# ------------------------------------------------------
+# Image Recommended
+# ------------------------------------------------------
+
+    if status == "image_recommended":
+
+        question = stage1_output.get(
+
+            "clarifying_question",
+
+            "Please upload a clear image of the affected area. "
+            "If you do not have one, type 'skip'."
+
+        )
+
+        start_waiting_for_image(session_state)
+
+        return question
     # ------------------------------------------------------
     # Clarification Needed
     # ------------------------------------------------------
@@ -531,8 +846,12 @@ def get_chat_response(
         question=stage1_output["normalized_query"]
 
     )
-
-    # ------------------------------------------------------
+    print("\n========== RAG ==========")
+    print("Disease:", disease)
+    print("Query:", stage1_output["normalized_query"])
+    print("Documents:", len(rag_results["documents"]))
+    print("====================================\n")
+        # ------------------------------------------------------
     # Retrieval Check
     # ------------------------------------------------------
 
@@ -545,13 +864,9 @@ def get_chat_response(
     # ------------------------------------------------------
 
     final_answer = generate_final_answer(
-
         user_question,
-
         stage1_output,
-
         rag_results
-
     )
 
     return final_answer

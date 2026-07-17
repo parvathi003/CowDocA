@@ -36,7 +36,17 @@ client = chromadb.PersistentClient(
 collection = client.get_collection(
     name=CHROMA_COLLECTION
 )
+# ==========================================================
+# Disease Name Mapping
+# ==========================================================
 
+DISEASE_MAPPING = {
+    "Foot Rot": "FootRot",
+    "Ringworm": "General",   # Only if Ringworm data is stored in General
+    "FMD": "FMD",
+    "LSD": "LSD",
+    "Mastitis": "Mastitis"
+}
 # ==========================================================
 # Retrieve Documents
 # ==========================================================
@@ -51,6 +61,10 @@ def retrieve_documents(
     identified disease.
     """
 
+    # Normalize disease name
+    disease = DISEASE_MAPPING.get(disease, disease)
+
+    # Create query embedding
     query_embedding = get_embedding(question)
 
     try:
@@ -70,13 +84,9 @@ def retrieve_documents(
     except Exception:
 
         return {
-
             "documents": [],
-
             "sources": [],
-
             "distances": []
-
         }
 
     documents = results.get("documents", [[]])
@@ -84,13 +94,9 @@ def retrieve_documents(
     distances = results.get("distances", [[]])
 
     return {
-
         "documents": documents[0] if documents else [],
-
         "sources": metadatas[0] if metadatas else [],
-
         "distances": distances[0] if distances else []
-
     }
 
 

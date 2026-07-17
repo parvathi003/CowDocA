@@ -3,14 +3,19 @@ Prediction Script
 
 Loads the trained EfficientNet-B0 model and predicts
 the disease from a cow image.
+
+Supports:
+- Image file path
+- Streamlit UploadedFile
+- PIL Image
 """
 
 import torch
 from PIL import Image
 from torchvision import transforms
 
-import config
-from model import build_model
+from cow_image_classifier import config
+from cow_image_classifier.model import build_model
 
 # ==========================================================
 # ImageNet Normalization
@@ -37,31 +42,23 @@ def load_model():
         return _model, _class_names
 
     checkpoint = torch.load(
-
         config.BEST_MODEL_PATH,
-
         map_location=config.DEVICE
-
     )
 
     class_names = checkpoint["class_names"]
 
     model = build_model(
-
         num_classes=len(class_names)
-
     )
 
     model.load_state_dict(
-
         checkpoint["model_state"]
-
     )
 
     model.eval()
 
     _model = model
-
     _class_names = class_names
 
     return model, class_names
@@ -80,25 +77,44 @@ transform = transforms.Compose([
     transforms.ToTensor(),
 
     transforms.Normalize(
-
         mean=IMAGENET_MEAN,
-
         std=IMAGENET_STD
-
     )
 
 ])
+
+# ==========================================================
+# Load Image
+# ==========================================================
+
+def load_image(image_input):
+    """
+    Accepts
+
+    - image path
+    - Streamlit UploadedFile
+    - PIL Image
+    """
+
+    if isinstance(image_input, Image.Image):
+
+        return image_input.convert("RGB")
+
+    return Image.open(image_input).convert("RGB")
 
 
 # ==========================================================
 # Prediction
 # ==========================================================
 
-def predict_disease(image_path, top_k=3):
+def predict_disease(
+    image_input,
+    top_k=3
+):
 
     model, class_names = load_model()
 
-    image = Image.open(image_path).convert("RGB")
+    image = load_image(image_input)
 
     image = transform(image)
 
@@ -111,46 +127,40 @@ def predict_disease(image_path, top_k=3):
         outputs = model(image)
 
         probabilities = torch.softmax(
-
             outputs,
-
             dim=1
-
         )
 
     top_probabilities, top_indices = torch.topk(
-
         probabilities,
-
         k=min(top_k, len(class_names))
-
     )
 
-    results = []
+    predictions = []
 
     for probability, index in zip(
-
         top_probabilities[0],
-
         top_indices[0]
-
     ):
 
-        results.append({
+        predictions.append({
 
             "disease": class_names[index],
 
             "confidence": round(
-
                 probability.item() * 100,
-
                 2
-
             )
 
         })
 
-    return results
+    return {
+
+        "top_prediction": predictions[0],
+
+        "predictions": predictions
+
+    }
 
 
 # ==========================================================
@@ -173,11 +183,7 @@ if __name__ == "__main__":
 
     else:
 
-        predictions = predict_disease(
-
-            sys.argv[1]
-
-        )
+        result = predict_disease(sys.argv[1])
 
         print()
 
@@ -189,12 +195,21 @@ if __name__ == "__main__":
 
         print()
 
-        for prediction in predictions:
+        print("Top Prediction")
+
+        print()
+
+        print(result["top_prediction"])
+
+        print()
+
+        print("Top Predictions")
+
+        print()
+
+        for prediction in result["predictions"]:
 
             print(
-
                 f"{prediction['disease']:<15}"
-
                 f"{prediction['confidence']:.2f}%"
-
             )
